@@ -1,18 +1,19 @@
-name: Management-Web
+name: Docker-Enterprise-Stack
 
 services:
-
   dns:
     image: ubuntu/bind9:latest
     container_name: dns
     environment:
       - TZ=Europe/Madrid
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
     volumes:
       - ./conf/bind9/named.conf.options:/etc/bind/named.conf.options
       - ./conf/bind9/named.conf.local:/etc/bind/named.conf.local
       - ./conf/bind9/db.insrv5.net:/etc/bind/db.insrv5.net
       - ./conf/bind9/db.insrv5.local:/etc/bind/db.insrv5.local
-      - ./log/dns:/var/log/bind9
     networks:
       insrv_net:
         ipv4_address: 192.168.5.253
@@ -74,12 +75,11 @@ services:
       - TZ=Europe/Madrid
     volumes:
       - db_data:/var/lib/mysql
-      - ./log/mysql:/var/log/mysql
       - ./conf/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       insrv_local:
         ipv4_address: 192.168.51.250
-    
+
   phpmyadmin:
     image: phpmyadmin
     container_name: phpmyadmin
@@ -92,23 +92,153 @@ services:
     networks:
       insrv_local:
         ipv4_address: 192.168.51.3
-    
+
   nginx:
     image: nginx:latest
     container_name: nginx
     volumes:
       - ./conf/nginx:/etc/nginx/conf.d:ro
       - ./conf/ssl/certs:/etc/ssl/certs:ro
-      - ./log/nginx:/var/log/nginx
     ports:
-      - "80:80"    
-      - "443:443"  
+      - "80:80"
+      - "443:443"
     networks:
       insrv_net:
         ipv4_address: 192.168.5.10
       insrv_local:
         ipv4_address: 192.168.51.100
-        
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./conf/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      insrv_local:
+        ipv4_address: 192.168.51.40
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+    volumes:
+      - ./conf/prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    dns:
+      - 192.168.51.253
+    depends_on:
+      - dns
+    networks:
+      insrv_local:
+        ipv4_address: 192.168.51.41
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    networks:
+      insrv_local:
+        ipv4_address: 192.168.51.42
+
+  mysqld-exporter:
+    image: prom/mysqld-exporter:latest
+    container_name: mysqld-exporter
+    restart: unless-stopped
+    environment:
+      - MYSQLD_EXPORTER_PASSWORD=1234
+    command:
+      - "--mysqld.username=user"
+      - "--mysqld.address=db:3306"
+    depends_on:
+      - db
+    networks:
+      insrv_local:
+        ipv4_address: 192.168.51.43
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:latest
+    container_name: nginx-exporter
+    restart: unless-stopped
+    command:
+      - --nginx.scrape-uri=http://nginx:8080/stub_status
+    depends_on:
+      - nginx
+    networks:
+      insrv_local:
+        ipv4_address: 192.168.51.44
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=grafana123
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_DOMAIN=grafana.insrv5.local
+      - GF_SERVER_ROOT_URL=https://grafana.insrv5.local/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./conf/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      insrv_local:
+        ipv4_address: 192.168.51.45
+  
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      insrv_local:
+        ipv4_address: 192.168.51.50
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./conf/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    user: root
+    depends_on:
+      - loki
+    networks:
+      insrv_local:
+        ipv4_address: 192.168.51.51
+  
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./conf/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+    networks:
+      insrv_local:
+        ipv4_address: 192.168.51.52
+
   apache:
     build:
       context: ./Docker/apache
@@ -117,8 +247,7 @@ services:
       - TZ=Europe/Madrid
     volumes:
       - ./conf/www:/var/www/html/
-      - ./log/apache:/var/log/apache2
-      - ./conf/apache/status.conf:/etc/apache2/conf-available/status.conf:ro
+      - ./backups:/backups
     dns:
       - 192.168.51.253
     networks:
@@ -131,7 +260,7 @@ services:
       - db
       - openldap
 
-# INTEGRACIÓN MailServer (docker-mailserver)
+  # INTEGRACIÓN MailServer (docker-mailserver)
 
   mailserver:
     image: mailserver/docker-mailserver:latest
@@ -199,150 +328,145 @@ services:
       - db
       - openldap
 
-  # --- MONITORING STACK ---
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: prometheus
+  vpn:
+    image: ghcr.io/wg-easy/wg-easy:15
+    container_name: vpn
+    environment:
+      - WG_HOST=127.0.0.1
+      - WG_DEFAULT_DNS=192.168.51.253, 1.1.1.1
+      - WG_ALLOWED_IPS=192.168.5.0/24,192.168.51.0/24
+      - WG_POST_UP=iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -j MASQUERADE; iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT
+      - WG_POST_DOWN=iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -j MASQUERADE; iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT
     volumes:
-      - ./conf/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - /lib/modules:/lib/modules:ro
+      - vpn_data:/etc/wireguard
+    ports:
+      - "51820:51820/udp"
+      - "51821:51821/tcp"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+    networks:
+      insrv_net:
+        ipv4_address: 192.168.5.20
+      insrv_local:
+        ipv4_address: 192.168.51.20
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    command: -H unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    restart: unless-stopped
     networks:
       insrv_local:
-        ipv4_address: 192.168.51.40
-    dns:
-      - 192.168.51.253
-    depends_on:
-      - dns
+        ipv4_address: 192.168.51.5
 
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
-    container_name: cadvisor
-    privileged: true
-    devices:
-      - /dev/kmsg
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      insrv_local:
-        ipv4_address: 192.168.51.41
-    dns:
-      - 192.168.51.253
-    depends_on:
-      - dns
-
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: node-exporter
+  backup-manager:
+    image: docker:cli
+    container_name: backup-manager
     restart: unless-stopped
     volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.rootfs=/rootfs'
-      - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
-    networks:
-      insrv_local:
-        ipv4_address: 192.168.51.43
-    dns:
-      - 192.168.51.253
-    depends_on:
-      - dns
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./backups:/backups
+      - ./conf/backup/backup.sh:/backup.sh:ro
+      - grafana_data:/backup_src/grafana
+      - vpn_data:/backup_src/vpn
+      - ./redmine/files:/backup_src/redmine_files
+      - ./mail/mail-data:/backup_src/mail
+    entrypoint: ["/bin/sh", "-c"]
+    command: 
+      - |
+        chmod +x /backup.sh
+        echo "0 3 * * * /backup.sh all >> /proc/1/fd/1 2>&1" > /etc/crontabs/root
+        crond -b -l 8
+        
+        echo "Iniciando vigía de backups manuales..."
+        while true; do
+          if [ -f /backups/.lanzar_copia ]; then
+            TARGETS=$$(cat /backups/.lanzar_copia)
+            echo "[INFO] Lanzando copia manual: $$TARGETS"
+            /backup.sh "$$TARGETS" >> /proc/1/fd/1 2>&1
+            rm -f /backups/.lanzar_copia
+            echo "[INFO] Copia completada: $$TARGETS"
+            echo "Copia de seguridad completada: $$TARGETS." > /backups/.resultado
+          fi
+          
+          if [ -f /backups/.restaurar_db ]; then
+            ARCHIVO=$$(cat /backups/.restaurar_db)
+            echo "[INFO] Restaurando DB: $$ARCHIVO"
+            docker exec -i db mysql -u root -proot < "/backups/$$ARCHIVO" >> /proc/1/fd/1 2>&1
+            rm -f /backups/.restaurar_db
+            echo "[INFO] Restauración DB completada: $$ARCHIVO"
+            echo "Base de datos restaurada desde '$$ARCHIVO'." > /backups/.resultado
+          fi
 
-  mysql-exporter:
-    image: prom/mysqld-exporter:latest
-    container_name: mysql-exporter
-    volumes:
-      - ./conf/mysql-exporter/.my.cnf:/home/.my.cnf
-    command:
-      - '--config.my-cnf=/home/.my.cnf'
-    networks:
-      insrv_local:
-        ipv4_address: 192.168.51.44
-    depends_on:
-      - db
+          if [ -f /backups/.restaurar_ldap ]; then
+            ARCHIVO=$$(cat /backups/.restaurar_ldap)
+            echo "[INFO] Restaurando LDAP: $$ARCHIVO"
+            docker exec -i ldap-server ldapadd -x -D "cn=admin,dc=insrv5,dc=local" -w admnpasswd -f "/backups/$$ARCHIVO" >> /proc/1/fd/1 2>&1
+            rm -f /backups/.restaurar_ldap
+            echo "[INFO] Restauración LDAP completada: $$ARCHIVO"
+            echo "Directorio LDAP restaurado desde '$$ARCHIVO'." > /backups/.resultado
+          fi
+          
+          if [ -f /backups/.restaurar_tar ]; then
+            ARCHIVO=$$(cat /backups/.restaurar_tar)
+            echo "[INFO] Restaurando TAR: $$ARCHIVO"
+            case "$$ARCHIVO" in
+              grafana_*) docker stop grafana >> /proc/1/fd/1 2>&1; tar -xzf "/backups/$$ARCHIVO" -C /backup_src/grafana >> /proc/1/fd/1 2>&1; docker start grafana >> /proc/1/fd/1 2>&1 ;;
+              vpn_*) docker stop vpn >> /proc/1/fd/1 2>&1; tar -xzf "/backups/$$ARCHIVO" -C /backup_src/vpn >> /proc/1/fd/1 2>&1; docker start vpn >> /proc/1/fd/1 2>&1 ;;
+              redmine_*) docker stop redmine >> /proc/1/fd/1 2>&1; tar -xzf "/backups/$$ARCHIVO" -C /backup_src/redmine_files >> /proc/1/fd/1 2>&1; docker start redmine >> /proc/1/fd/1 2>&1 ;;
+              mail_*) docker stop mailserver >> /proc/1/fd/1 2>&1; tar -xzf "/backups/$$ARCHIVO" -C /backup_src/mail >> /proc/1/fd/1 2>&1; docker start mailserver >> /proc/1/fd/1 2>&1 ;;
+            esac
+            rm -f /backups/.restaurar_tar
+            echo "[INFO] Restauración TAR completada: $$ARCHIVO"
+            echo "Restauración completada desde '$$ARCHIVO'." > /backups/.resultado
+          fi
 
-  openldap-exporter:
-    image: renaultdigital/openldap-exporter:latest
-    container_name: ldap-exporter
-    environment:
-      - LDAP_USER=cn=admin,dc=insrv5,dc=local
-      - LDAP_PASS=admnpasswd
-      - LDAP_ADDR=ldap-server:389
-    networks:
-      insrv_local:
-        ipv4_address: 192.168.51.45
-    depends_on:
-      - openldap
+          if [ -f /backups/.eliminar_archivo ]; then
+            ARCHIVO=$$(basename "$$(cat /backups/.eliminar_archivo)")
+            echo "[INFO] Eliminando archivo: $$ARCHIVO"
+            rm -f "/backups/$$ARCHIVO"
+            rm -f /backups/.eliminar_archivo
+            echo "[INFO] Archivo eliminado: $$ARCHIVO"
+            echo "Archivo '$$ARCHIVO' eliminado correctamente." > /backups/.resultado
+          fi
 
-  apache-exporter:
-    image: lusotycoon/apache-exporter:latest
-    container_name: apache-exporter
-    command:
-      - '--scrape_uri=http://apache/server-status?auto'
+          sleep 2
+        done
     networks:
       insrv_local:
-        ipv4_address: 192.168.51.46
-    depends_on:
-      - apache
-
-  nginx-exporter:
-    image: nginx/nginx-prometheus-exporter:latest
-    container_name: nginx-exporter
-    command:
-      - '-nginx.scrape-uri=http://nginx:8080/stub_status'
-    networks:
-      insrv_local:
-        ipv4_address: 192.168.51.47
-    depends_on:
-      - nginx
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    environment:
-      - GF_SERVER_DOMAIN=grafana.insrv5.local
-      - GF_SERVER_ROOT_URL=https://grafana.insrv5.local
-      - GF_SECURITY_ADMIN_PASSWORD=admin # Cambiar en primer inicio
-      - TZ=Europe/Madrid
-    volumes:
-      - grafana_data:/var/lib/grafana
-    networks:
-      insrv_local:
-        ipv4_address: 192.168.51.42
-    dns:
-      - 192.168.51.253
-    depends_on:
-      - dns
-      - prometheus
+        ipv4_address: 192.168.51.60
 
 volumes:
   db_data:
   ldap_data:
   ldap_config:
+  vpn_data:
   prometheus_data:
   grafana_data:
+  portainer_data:
 
 networks:
   insrv_net:
     driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1500"
     ipam:
       config:
         - subnet: 192.168.5.0/24
+          gateway: 192.168.5.1
   insrv_local:
     driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1500"
     ipam:
       config:
         - subnet: 192.168.51.0/24
+          gateway: 192.168.51.1
