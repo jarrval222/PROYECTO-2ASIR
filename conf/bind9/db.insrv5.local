@@ -1,6 +1,6 @@
 $TTL    604800
 @       IN      SOA     ns.insrv5.local. admin.insrv5.local. (
-                              2         ; Serial
+                              4         ; Serial
                          604800         ; Refresh
                           86400         ; Retry
                         2419200         ; Expire
@@ -18,11 +18,15 @@ openldap  IN    A       192.168.51.252
 mysql   IN      A       192.168.51.250
 
 ; Paneles Internos
-pma 		  IN      A       192.168.51.3  
-ldapadmin IN      A       192.168.51.4
 tareas    IN      A       192.168.51.100
+pma       IN      A       192.168.51.100
+ldapadmin IN      A       192.168.51.100
 nominas   IN      A       192.168.51.100
 recursos  IN      A       192.168.51.100
+portainer IN      A       192.168.51.100
+grafana   IN      A       192.168.51.100
+backups   IN      A       192.168.51.100
+prometheus IN     A       192.168.51.100
 
 ; Correo interno
 @       IN      MX      10 mail.insrv5.local.

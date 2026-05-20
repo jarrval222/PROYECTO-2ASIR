@@ -1,0 +1,111 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - prometheus:9090
+
+  - job_name: wg-easy-vpn
+    metrics_path: /metrics/prometheus
+    static_configs:
+      - targets:
+          - vpn:51821
+
+  - job_name: cadvisor
+    static_configs:
+      - targets:
+          - cadvisor:8080
+
+  - job_name: mysql-exporter
+    static_configs:
+      - targets:
+          - mysqld-exporter:9104
+
+  - job_name: nginx-exporter
+    static_configs:
+      - targets:
+          - nginx-exporter:9113
+
+  - job_name: blackbox-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx_insecure]
+    static_configs:
+      - targets:
+          - https://insrv5.net/
+          - https://grafana.insrv5.local/
+          - https://prometheus.insrv5.local/
+          - https://tareas.insrv5.local/
+          - https://pma.insrv5.local/
+          - https://ldapadmin.insrv5.local/
+          - https://nominas.insrv5.local/
+          - https://recursos.insrv5.local/
+          - https://portainer.insrv5.local/
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: blackbox-tcp
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+          # Solo servicios NO web que necesitan validación de puerto
+          - dns:53
+          - openldap:389
+          - db:3306
+          - mailserver:25
+          - mailserver:143
+          - mailserver:587
+          - mailserver:993
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: blackbox-dns-local
+    metrics_path: /probe
+    params:
+      module: [dns_insrv5_local]
+    static_configs:
+      - targets:
+          - dns:53
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: blackbox-dns-net
+    metrics_path: /probe
+    params:
+      module: [dns_insrv5_net]
+    static_configs:
+      - targets:
+          - dns:53
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
